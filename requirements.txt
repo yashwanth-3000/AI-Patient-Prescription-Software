@@ -1,0 +1,31 @@
+# FastAPI and server dependencies
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+python-multipart>=0.0.6
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Google Cloud and AI dependencies
+google-generativeai>=0.3.0
+google-cloud-bigquery>=3.30.0
+google-cloud-bigquery-storage>=2.30.0
+google-auth>=2.30.0
+
+# BigFrames for BigQuery ML operations
+bigframes>=2.15.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=10.0.0
+
+# Image processing
+Pillow>=10.0.0
+
+# HTTP requests (for testing)
+requests>=2.30.0
+
+# Additional dependencies
+pydantic>=2.0.0
+typing-extensions>=4.5.0
