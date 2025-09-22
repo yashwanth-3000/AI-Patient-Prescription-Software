@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import tempfile
@@ -32,6 +33,15 @@ app = FastAPI(
     title="Medical Image Analysis API",
     description="API for analyzing medical prescriptions using AI",
     version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Configuration from environment variables
@@ -422,7 +432,11 @@ async def root():
         "endpoints": {
             "/analyze-image": "POST - Upload and analyze medical prescription image",
             "/analyze-patient": "POST - Analyze patient by PID with AI-powered medical insights",
-            "/vector-search": "POST - Semantic search for similar patients using natural language queries"
+            "/vector-search": "POST - Semantic search for similar patients using natural language queries",
+            "/patients": "GET - Get patients with pagination (limit, offset params)",
+        "/patients/count": "GET - Get total patient count",
+            "/patients/{pid}": "GET - Get specific patient by PID",
+            "/search": "GET - Search patients by query"
         }
     }
 
@@ -534,6 +548,158 @@ async def vector_search(request: VectorSearchRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/patients")
+async def get_all_patients(limit: int = 50, offset: int = 0):
+    """
+    Get patients from BigQuery with pagination
+    
+    Query parameters:
+    - limit: Number of patients to return (default: 50, max: 100)
+    - offset: Number of patients to skip (default: 0)
+    
+    Returns JSON array with patient information:
+    - registrationNo: Patient ID (PID)
+    - firstName, lastName: Patient name
+    - age, gender: Demographics
+    - address: Patient address
+    - firstVisitDate: Date of first visit
+    - prescriptions: Full prescription history
+    """
+    try:
+        # Validate parameters
+        limit = min(limit, 100)  # Cap at 100 to prevent timeout
+        offset = max(offset, 0)  # Ensure non-negative
+        
+        # Use BigQuery SQL for efficient pagination
+        query = f"""
+        SELECT PID, FirstName, LastName, Age, Gender, Address, FirstVisit, Prescriptions
+        FROM `{EMBEDDING_TABLE_ID}`
+        ORDER BY PID
+        LIMIT {limit} OFFSET {offset}
+        """
+        
+        df = bpd.read_gbq_query(query)
+        
+        # Transform data to match frontend expectations
+        patients_data = []
+        for _, row in df.to_pandas().iterrows():
+            patients_data.append({
+                "registrationNo": str(row['PID']),
+                "firstName": row['FirstName'],
+                "lastName": row['LastName'],
+                "age": int(row['Age']),
+                "gender": row['Gender'],
+                "address": row['Address'],
+                "firstVisitDate": row['FirstVisit'],
+                "prescriptions": row['Prescriptions']
+            })
+        
+        return JSONResponse(content=patients_data)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch patients: {str(e)}")
+
+@app.get("/patients/count")
+async def get_patients_count():
+    """
+    Get total count of patients in BigQuery
+    
+    Returns JSON object with total count
+    """
+    try:
+        query = f"""
+        SELECT COUNT(*) as total_count
+        FROM `{EMBEDDING_TABLE_ID}`
+        """
+        
+        df = bpd.read_gbq_query(query)
+        total_count = int(df.to_pandas().iloc[0]['total_count'])
+        
+        return JSONResponse(content={"total_count": total_count})
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get patient count: {str(e)}")
+
+@app.get("/patients/{pid}")
+async def get_patient_by_pid_endpoint(pid: int):
+    """
+    Get specific patient by PID
+    
+    Returns JSON object with complete patient information
+    """
+    try:
+        patient_data = get_patient_by_pid(pid)
+        if patient_data is None:
+            raise HTTPException(status_code=404, detail=f"Patient with PID {pid} not found")
+        
+        # Transform to match frontend format
+        formatted_patient = {
+            "registrationNo": str(patient_data['pid']),
+            "firstName": patient_data['first_name'],
+            "lastName": patient_data['last_name'],
+            "age": patient_data['age'],
+            "gender": patient_data['gender'],
+            "address": patient_data['address'],
+            "firstVisitDate": patient_data['first_visit'],
+            "prescriptions": patient_data['prescriptions']
+        }
+        
+        return JSONResponse(content=formatted_patient)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch patient: {str(e)}")
+
+@app.get("/search")
+async def search_patients_endpoint(q: str):
+    """
+    Search patients by query
+    
+    Query parameter:
+    - q: Search term (name, PID, or address)
+    
+    Returns JSON array of matching patients
+    """
+    try:
+        if not q.strip():
+            raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
+        
+        df_written = bpd.read_gbq(EMBEDDING_TABLE_ID)
+        df_pandas = df_written.to_pandas()
+        
+        # Search logic
+        search_term = q.lower().strip()
+        mask = (
+            df_pandas['FirstName'].str.lower().str.contains(search_term, na=False) |
+            df_pandas['LastName'].str.lower().str.contains(search_term, na=False) |
+            df_pandas['PID'].astype(str).str.contains(search_term, na=False) |
+            df_pandas['Address'].str.lower().str.contains(search_term, na=False)
+        )
+        
+        results = df_pandas[mask]
+        
+        # Transform results
+        patients_data = []
+        for _, row in results.iterrows():
+            patients_data.append({
+                "registrationNo": str(row['PID']),
+                "firstName": row['FirstName'],
+                "lastName": row['LastName'],
+                "age": int(row['Age']),
+                "gender": row['Gender'],
+                "address": row['Address'],
+                "firstVisitDate": row['FirstVisit'],
+                "prescriptions": row['Prescriptions']
+            })
+        
+        return JSONResponse(content=patients_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to search patients: {str(e)}")
 
 @app.get("/health")
 async def health_check():
